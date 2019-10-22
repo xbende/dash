@@ -1,0 +1,74 @@
+
+- name: install ffmpeg and gpac
+  apt:
+    name: 
+      - ffmpeg
+      - gpac
+    update_cache: true
+  async: 300
+  poll: 5
+
+- name: "Check if video folder exists"
+  file:
+    path: /opt/video
+    state: directory
+
+- name: Check if file is already downloaded
+  stat:
+    path: /opt/video/tos_original.mov
+    get_checksum: no
+  register: original_video
+
+- name: Download Video from origin
+  get_url:
+    url: http://ftp.nluug.nl/pub/graphics/blender/demo/movies/ToS/ToS-4k-1920.mov
+    dest: /opt/video/tos_original.mov
+  when: not original_video.stat.exists
+  async: 600
+  poll: 5
+
+- name: create representations dir
+  file:
+    path: /opt/video/representations
+    state: directory
+
+- name: "Create representatinon"
+  command: "ffmpeg -y -i /opt/video/tos_original.mov -t 300 -preset slow -tune film -vsync passthrough -write_tmcd 0 -an -c:v libx264 -x264opts 'keyint=24:min-keyint=24:no-scenecut' -crf 21 -maxrate {{item.maxrate}} -bufsize {{item.bufsize}} -pix_fmt yuv420p -vf \"{{item.scale}}\" -f mp4 /opt/video/representations/tears_of_steel_{{item.maxrate}}.mp4"
+  async: 6000
+  poll: 5
+  with_items: "{{representations}}"
+  when: not original_video.stat.exists
+
+- name: create segments folder
+  file:
+    path: /opt/video/segments
+    state: directory
+    owner: www-data
+
+- name: Generate dash segments
+  command: "MP4Box -dash 1000 -rap -frag-rap -bs-switching no -profile \"dashavc264:live\" {% for rep in representations %} /opt/video/representations/tears_of_steel_{{rep.maxrate}}.mp4 {% endfor %} -out /opt/video/segments/tears_of_steel.mpd"
+  when: not original_video.stat.exists
+
+- name: Change owner of files after generation
+  file:
+    path: /opt/video/segments
+    owner: www-data
+    recurse: yes
+
+- name: create symlink to /var/www/html
+  file:
+    state: link
+    src: /opt/video/segments
+    dest: /var/www/html/segments
+
+- name: Replace https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd with our MPD file
+  lineinfile:
+    dest: /var/www/html/samples/dash-if-reference-player/app/main.js
+    regexp: ".*url:.*"
+    line: "        url: 'http://{{domain_url}}/segments/tears_of_steel.mpd'"
+
+- name: set custom index html
+  copy:
+    src: index.html
+    dest: /var/www/html/samples/dash-if-reference-player/index.html
+    owner: www-data
